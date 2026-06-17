@@ -79,6 +79,15 @@ If the backend is unavailable (e.g. opening `index.html` directly as a file), a 
 That's it. A native window opens with the full UI.  
 File exports (PNG, DOCX, JSON) open a native **Save As** dialog.
 
+## Security Notice
+
+BI Flow Mapper is an open-source project.
+
+If Windows SmartScreen shows a warning, click:
+More info → Run anyway
+
+This can happen because the executable is not code-signed.
+
 ---
 
 ### 🌐 Browser mode (Windows / macOS / Linux — Python required)
