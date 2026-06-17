@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BI Flow Mapper</title>
+    <link rel="icon" type="image/png" href="image/icon.png" />
+    <link rel="apple-touch-icon" href="image/icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Mapper controls">
+        <div class="brand-block">
+          <div class="brand-mark"><img src="image/icon.png" alt="" /></div>
+          <div class="brand-text">
+            <h1>BI Flow Mapper</h1>
+            <p>Power BI lineage explorer</p>
+          </div>
+          <div class="lang-switcher" aria-label="Language / Idioma">
+            <button class="lang-btn active" data-lang="en-US" type="button">EN</button>
+            <button class="lang-btn" data-lang="pt-BR" type="button">PT</button>
+          </div>
+        </div>
+
+        <label class="upload-zone" for="pbixInput">
+          <input id="pbixInput" type="file" accept=".pbix,.pbit,.zip" />
+          <span class="upload-title">Select PBIX</span>
+          <span class="upload-copy">The file is analysed locally in the browser.</span>
+        </label>
+
+        <div class="toolbar" role="toolbar" aria-label="Graph actions">
+          <button id="demoButton" type="button" class="tool-button" title="Load demo">
+            <span class="button-icon">EX</span>
+            <span class="btn-text">Demo</span>
+          </button>
+          <button id="pbixButton" type="button" class="tool-button" title="Return to loaded PBIX" disabled>
+            <span class="button-icon">PB</span>
+            <span class="btn-text">PBIX</span>
+          </button>
+          <button id="exportButton" type="button" class="tool-button" title="Export JSON">
+            <span class="button-icon">JS</span>
+            <span class="btn-text">JSON</span>
+          </button>
+          <button id="exportImageButton" type="button" class="tool-button" title="Export PNG image">
+            <span class="button-icon">PNG</span>
+            <span class="btn-text">Export image</span>
+          </button>
+          <button id="exportDocxButton" type="button" class="tool-button" title="Export Word documentation" disabled>
+            <span class="button-icon">DOC</span>
+            <span class="btn-text">Export docs</span>
+          </button>
+        </div>
+
+        <section class="panel status-panel" aria-label="Summary">
+          <h2 id="panelHeadSummary">Summary</h2>
+          <dl class="metrics">
+            <div>
+              <dt id="metricSources">Sources</dt>
+              <dd id="sourceCount">0</dd>
+            </div>
+            <div>
+              <dt id="metricQueries">Queries</dt>
+              <dd id="queryCount">0</dd>
+            </div>
+            <div>
+              <dt id="metricNodes">Nodes</dt>
+              <dd id="nodeCount">0</dd>
+            </div>
+            <div>
+              <dt id="metricImpact">Impact</dt>
+              <dd id="impactCount">0</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel" aria-label="Filters">
+          <h2 id="panelHeadFilters">Filters</h2>
+          <div class="filter-grid" id="typeFilters"></div>
+        </section>
+
+        <section class="panel lineage-panel" aria-label="Lineage">
+          <h2 id="panelHeadLineage">Lineage</h2>
+          <label class="lineage-toggle-label">
+            <div class="toggle-track">
+              <input id="lineageToggle" type="checkbox" class="toggle-input" />
+              <span class="toggle-thumb"></span>
+            </div>
+            <span class="toggle-text">
+              <strong>Filter by lineage</strong>
+              <span>Click a node to see its full lineage only</span>
+            </span>
+          </label>
+        </section>
+
+        <section class="panel details-panel" aria-label="Details">
+          <h2 id="panelHeadDetails">Details</h2>
+          <div id="nodeDetails" class="node-details">
+            <p>Select a node to see its origin, dependencies and impact.</p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="workspace" aria-label="Lineage map">
+        <header class="workspace-header">
+          <div>
+            <h2 id="workspaceTitle">Lineage Map</h2>
+            <p id="workspaceSubtitle">Load a PBIX or use the demo to get started.</p>
+          </div>
+          <div class="tab-bar" role="tablist" aria-label="Views">
+            <button id="tabMapa" type="button" class="tab-button active" role="tab" aria-selected="true" aria-controls="panelMapa">Map</button>
+            <button id="tabRelacionamentos" type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="panelRelacionamentos">Relationships</button>
+            <button id="tabArquitetura" type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="panelArquitetura">Architecture</button>
+            <button id="tabPaginas" type="button" class="tab-button" role="tab" aria-selected="false" aria-controls="panelPaginas">Pages</button>
+          </div>
+          <div class="legend" id="mapLegend" aria-label="Legend">
+            <span><i class="dot source"></i> Source</span>
+            <span><i class="dot query"></i> Query</span>
+            <span><i class="dot model"></i> Model</span>
+            <span><i class="dot measure"></i> Measure</span>
+            <span><i class="dot visual"></i> Visual</span>
+
+          </div>
+        </header>
+
+        <div class="tab-panels">
+        <div id="panelMapa" class="graph-frame" role="tabpanel">
+          <svg id="edgeLayer" class="edge-layer" aria-hidden="true"></svg>
+          <div id="graphCanvas" class="graph-canvas" role="list" aria-label="Graph nodes"></div>
+          <div id="emptyState" class="empty-state">
+            <strong>Start with your PBIX file</strong>
+            <span>The app detects connectors, queries, tables and report signals when this information exists in the package.</span>
+          </div>
+        </div>
+
+        <div id="panelRelacionamentos" class="rel-panel hidden" role="tabpanel">
+          <div id="relEmpty" class="empty-state rel-empty-state">
+            <strong>No relationships found</strong>
+            <span>Load a PBIX file analysed by the backend to see model relationships.</span>
+          </div>
+          <div id="relContent" class="rel-content hidden">
+            <div id="relDiagram" class="rel-diagram"></div>
+            <div id="relTable" class="rel-table-wrap"></div>
+          </div>
+        </div>
+
+        <div id="panelArquitetura" class="arch-panel hidden" role="tabpanel">
+          <div id="archEmpty" class="empty-state rel-empty-state">
+            <strong>No data sources found</strong>
+            <span>Load a PBIX file to see the connection architecture diagram.</span>
+          </div>
+          <div id="archContent" class="arch-content hidden">
+            <div id="archDiagram" class="arch-diagram"></div>
+          </div>
+        </div>
+
+        <div id="panelPaginas" class="pages-panel hidden" role="tabpanel">
+          <div id="pagesEmpty" class="empty-state rel-empty-state">
+            <strong>No pages found</strong>
+            <span>Load a PBIX file to see the report pages.</span>
+          </div>
+          <div id="pagesContent" class="pages-content hidden"></div>
+        </div>
+        </div><!-- /.tab-panels -->
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

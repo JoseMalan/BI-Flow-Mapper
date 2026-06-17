@@ -1,0 +1,30 @@
+# BI Flow Mapper — Python dependencies
+# Python 3.10+ recommended (3.8+ minimum)
+# Install: pip install -r requirements.txt
+
+#python_requires>=3.8
+
+# ── Core ──────────────────────────────────────────────────────────────────
+pbixray>=0.10.0,<2.0
+python-docx>=1.1.0,<2.0
+
+# ── Diagramas e banners no export Word ───────────────────────────────────
+# Pillow: desenha ERD, arquitetura e banners coloridos diretamente em Python.
+# Não precisa de nenhuma biblioteca do sistema operacional.
+Pillow>=9.0.0
+
+# ── Notas ────────────────────────────────────────────────────────────────
+# numpy, pandas, apsw, kaitaistruct, xpress8, xpress9 e xmhuffman são
+# dependências transitivas do pbixray — não precisam ser declaradas aqui.
+
+# ── App desktop (janela nativa) ───────────────────────────────────────────
+# pywebview — abre uma janela nativa usando WebView2 (embutido no Windows 10/11).
+# Renderiza index.html + app.js sem browser externo; o backend.py roda em
+# thread interna. A ponte JS↔Python (window.pywebview.api) é usada para os
+# diálogos nativos de Salvar Arquivo (PNG, DOCX, JSON).
+pywebview>=5.0
+
+# ── Empacotamento ─────────────────────────────────────────────────────────
+# PyInstaller: gera o executável .exe único distribuível.
+# Só é necessário para quem vai gerar o build — não para rodar em dev.
+pyinstaller>=6.0

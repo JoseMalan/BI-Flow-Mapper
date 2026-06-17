@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+bi-flow-mapper.log
+bi-flow-mapper.err.log
+bi-flow-mapper.port
+
+
+# Build
+build/
+dist/
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# VSCode
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+check_pbixray.py
+dist/bi-flow-mapper.port
