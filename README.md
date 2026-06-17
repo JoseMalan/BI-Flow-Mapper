@@ -73,7 +73,7 @@ If the backend is unavailable (e.g. opening `index.html` directly as a file), a 
 
 **Prerequisite:** Windows 10 or 11 (WebView2 is built in — nothing extra to install).
 
-1. Go to the `dist/` folder.
+1. Download the latest .exe from Releases.
 2. Double-click **`BI Flow Mapper.exe`**.
 
 That's it. A native window opens with the full UI.  
