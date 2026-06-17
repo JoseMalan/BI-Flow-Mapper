@@ -1,5 +1,7 @@
 # BI Flow Mapper
 
+[![Latest Release](https://img.shields.io/github/v/release/JoseMalan/BI-Flow-Mapper)](https://github.com/JoseMalan/BI-Flow-Mapper/releases/latest)
+
 > **Visual data lineage explorer for Power BI — runs entirely on your machine.**
 
 BI Flow Mapper reads a `.pbix` file and draws the full pipeline from data sources through Power Query, model tables, DAX measures, calculated columns and report visuals — with impact analysis, relationship diagrams, architecture overview, pages inventory, and Word documentation export.
