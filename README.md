@@ -10,7 +10,7 @@ BI Flow Mapper reads a `.pbix` file and draws the full pipeline from data source
 
 | | Desktop app | Browser mode |
 |---|---|---|
-| **How** | Run the `.exe` in `dist/` | `python backend.py` (or double-click the `.vbs`) |
+| **How** | Run the `.exe` in `releases` | `python backend.py` (or double-click the `.vbs`) |
 | **Window** | Native window (WebView2) | Your default browser |
 | **File exports** | Native Save-As dialog | Browser download |
 | **Platform** | Windows 10 / 11 | Windows, macOS, Linux |
