@@ -2186,6 +2186,9 @@ async function exportDocumentation() {
   try {
     const response = await fetch("/api/export-docx", {
       method: "POST",
+      headers: {
+        "X-BIFM-Locale": locale
+      },
       body: form
     });
     if (!response.ok) {
@@ -2196,7 +2199,7 @@ async function exportDocumentation() {
     const blob = await response.blob();
     const suggestedName =
       filenameFromDisposition(response.headers.get("Content-Disposition")) ||
-      `${slug(state.lastPbixFile.name.replace(/\.[^.]+$/, ""))}_documentacao.docx`;
+      `${slug(state.lastPbixFile.name.replace(/\.[^.]+$/, ""))}_${locale === "pt-BR" ? "documentacao" : "documentation"}.docx`;
 
     // pywebview blocks link.click() — use the Python bridge when available
     if (window.pywebview && window.pywebview.api && window.pywebview.api.save_file) {

@@ -13,44 +13,93 @@ from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 
 from connector_catalog import POWER_QUERY_CONNECTORS
 
-try:
-    from pbixray import PBIXRay
-    PBIXRAY_IMPORT_ERROR = ""
-except Exception as import_error:
-    PBIXRay = None
-    PBIXRAY_IMPORT_ERROR = str(import_error)
+# Heavy libraries are loaded only when the user analyzes a PBIX or exports Word.
+# Keeping them out of the desktop launch path makes the WebView appear sooner.
+PBIXRay = None
+PBIXRAY_IMPORT_ERROR = ""
+_PBIXRAY_IMPORT_ATTEMPTED = False
 
-try:
-    from docx import Document
-    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
-    from docx.shared import Inches, Pt, RGBColor
-    DOCX_IMPORT_ERROR = ""
-except Exception as import_error:
-    Document = None
-    DOCX_IMPORT_ERROR = str(import_error)
+Document = None
+DOCX_IMPORT_ERROR = ""
+_DOCX_IMPORT_ATTEMPTED = False
+
+PIL_AVAILABLE = False
+_PIL_IMPORT_ATTEMPTED = False
+_PILImage = _PILDraw = _PILFont = None
+
+CAIROSVG_AVAILABLE = False
+_CAIROSVG_IMPORT_ATTEMPTED = False
+_cairosvg = None
 
 
-# SVG/diagram rendering — tries backends in order, uses first available.
-# Pillow (PIL) is almost always present on Windows; it's the primary backend.
-try:
-    from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageFont as _PILFont
-    PIL_AVAILABLE = True
-except Exception:
-    PIL_AVAILABLE = False
+def load_pbixray() -> bool:
+    global PBIXRay, PBIXRAY_IMPORT_ERROR, _PBIXRAY_IMPORT_ATTEMPTED
+    if not _PBIXRAY_IMPORT_ATTEMPTED:
+        _PBIXRAY_IMPORT_ATTEMPTED = True
+        try:
+            from pbixray import PBIXRay as _PBIXRay
+            PBIXRay = _PBIXRay
+        except Exception as import_error:
+            PBIXRAY_IMPORT_ERROR = str(import_error)
+    return PBIXRay is not None
 
-try:
-    import cairosvg as _cairosvg
-    CAIROSVG_AVAILABLE = True
-except Exception:
-    CAIROSVG_AVAILABLE = False
+
+def load_docx() -> bool:
+    global Document, DOCX_IMPORT_ERROR, _DOCX_IMPORT_ATTEMPTED
+    global WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT, WD_ALIGN_PARAGRAPH
+    global OxmlElement, qn, Inches, Pt, RGBColor
+    if not _DOCX_IMPORT_ATTEMPTED:
+        _DOCX_IMPORT_ATTEMPTED = True
+        try:
+            from docx import Document as _Document
+            from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT as _WD_CELL_VERTICAL_ALIGNMENT
+            from docx.enum.table import WD_TABLE_ALIGNMENT as _WD_TABLE_ALIGNMENT
+            from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN_PARAGRAPH
+            from docx.oxml import OxmlElement as _OxmlElement
+            from docx.oxml.ns import qn as _qn
+            from docx.shared import Inches as _Inches, Pt as _Pt, RGBColor as _RGBColor
+            Document = _Document
+            WD_CELL_VERTICAL_ALIGNMENT = _WD_CELL_VERTICAL_ALIGNMENT
+            WD_TABLE_ALIGNMENT = _WD_TABLE_ALIGNMENT
+            WD_ALIGN_PARAGRAPH = _WD_ALIGN_PARAGRAPH
+            OxmlElement = _OxmlElement
+            qn = _qn
+            Inches, Pt, RGBColor = _Inches, _Pt, _RGBColor
+        except Exception as import_error:
+            DOCX_IMPORT_ERROR = str(import_error)
+    return Document is not None
+
+
+def load_pillow() -> bool:
+    global PIL_AVAILABLE, _PIL_IMPORT_ATTEMPTED
+    global _PILImage, _PILDraw, _PILFont
+    if not _PIL_IMPORT_ATTEMPTED:
+        _PIL_IMPORT_ATTEMPTED = True
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            _PILImage, _PILDraw, _PILFont = Image, ImageDraw, ImageFont
+            PIL_AVAILABLE = True
+        except Exception:
+            PIL_AVAILABLE = False
+    return PIL_AVAILABLE
+
+
+def load_cairosvg() -> bool:
+    global CAIROSVG_AVAILABLE, _CAIROSVG_IMPORT_ATTEMPTED, _cairosvg
+    if not _CAIROSVG_IMPORT_ATTEMPTED:
+        _CAIROSVG_IMPORT_ATTEMPTED = True
+        try:
+            import cairosvg
+            _cairosvg = cairosvg
+            CAIROSVG_AVAILABLE = True
+        except Exception:
+            CAIROSVG_AVAILABLE = False
+    return CAIROSVG_AVAILABLE
 
 # Pasta dos assets empacotados (index.html, app.js, styles.css...)
 if getattr(sys, 'frozen', False):
@@ -149,7 +198,9 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def do_POST(self):
-        if self.path not in {"/api/analyze", "/api/export-docx"}:
+        parsed_url = urlparse(self.path)
+        request_path = parsed_url.path
+        if request_path not in {"/api/analyze", "/api/export-docx"}:
             self.send_json({"error": "Not found"}, status=404)
             return
 
@@ -160,9 +211,12 @@ class Handler(SimpleHTTPRequestHandler):
                 pbix_path = Path(temp_dir) / safe_name
                 pbix_path.write_bytes(payload)
 
-                if self.path == "/api/export-docx":
-                    data = build_documentation_docx(pbix_path, file_name)
-                    docx_name = f"{Path(file_name or 'power-bi').stem}_documentacao.docx"
+                if request_path == "/api/export-docx":
+                    locale = self.headers.get("X-BIFM-Locale") or parse_qs(parsed_url.query).get("locale", ["pt-BR"])[0]
+                    doc_locale = normalize_doc_locale(locale)
+                    data = build_documentation_docx(pbix_path, file_name, doc_locale)
+                    suffix = "documentacao" if doc_locale == "pt-BR" else "documentation"
+                    docx_name = f"{Path(file_name or 'power-bi').stem}_{suffix}.docx"
                     self.send_binary(
                         data,
                         docx_name,
@@ -230,7 +284,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def analyze_pbix(path: Path):
-    if PBIXRay is None:
+    if not load_pbixray():
         raise RuntimeError(f"pbixray nao esta instalado ou nao carregou: {PBIXRAY_IMPORT_ERROR}")
 
     model = PBIXRay(str(path))
@@ -338,7 +392,7 @@ def svg_to_png_bytes(svg_string: str, scale: float = 2.0) -> bytes | None:
     """Convert SVG to PNG via cairosvg if available (best quality)."""
     if not svg_string:
         return None
-    if CAIROSVG_AVAILABLE:
+    if load_cairosvg():
         try:
             return _cairosvg.svg2png(bytestring=svg_string.encode("utf-8"), scale=scale)
         except Exception:
@@ -964,12 +1018,224 @@ def insert_svg_image(doc, svg_string: str, width_inches: float = 6.5, caption: s
     return True
 
 
-def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
-    if PBIXRay is None:
-        raise RuntimeError(f"pbixray nao esta instalado ou nao carregou: {PBIXRAY_IMPORT_ERROR}")
-    if Document is None:
-        raise RuntimeError(f"python-docx nao esta instalado ou nao carregou: {DOCX_IMPORT_ERROR}")
+DOC_TEXT = {
+    "pt-BR": {
+        "metrics": {
+            "sources": "Fontes",
+            "queries": "Queries",
+            "tables": "Tabelas",
+            "measures": "Medidas",
+            "calc_columns": "Colunas calculadas",
+            "relationships": "Relacionamentos",
+            "pages": "Páginas",
+            "visuals": "Visuais",
+        },
+        "sections": [
+            "Visão geral",
+            "Fontes de dados",
+            "Power Query",
+            "Modelo semântico",
+            "Dicionário de dados",
+            "Medidas DAX",
+            "Colunas calculadas",
+            "Relacionamentos",
+            "Páginas e visuais",
+            "Linhagem técnica",
+            "Diagnósticos",
+        ],
+        "cover_subtitle": "Documentação técnica do painel",
+        "generated_at": "Gerado em",
+        "toc": "Sumário",
+        "overview_banner": "Visão geral do relatório",
+        "overview_text": "Documentação gerada automaticamente pelo BI Flow Mapper a partir dos metadados locais do arquivo PBIX.",
+        "file": "Arquivo",
+        "analysis_source": "Origem da análise",
+        "total_nodes": "Total de nós no mapa",
+        "total_edges": "Total de arestas de linhagem",
+        "data_sources_banner": "Conectores e origens de dados detectados",
+        "source_headers": ["Fonte", "Padrão detectado", "Caminho / servidor"],
+        "no_sources": "Nenhuma fonte detectada.",
+        "arch_caption": "Diagrama de arquitetura — fontes conectadas ao dataset Power BI",
+        "sources_detected": "fonte(s) detectada(s):",
+        "connection_details": "2.1 Detalhes de conexão (TMSCHEMA_DATASOURCES)",
+        "connection_headers": ["Tipo", "Nome", "String de conexão"],
+        "power_query_banner": "Transformações e consultas M",
+        "query_headers": ["Query", "Conexão / caminho", "Resumo técnico"],
+        "no_queries": "Nenhuma query encontrada.",
+        "semantic_model_banner": "Tabelas carregadas no modelo",
+        "table_headers": ["Tabela", "Colunas", "Oculta", "Descrição"],
+        "no_tables": "Nenhuma tabela encontrada.",
+        "dictionary_banner": "Colunas, tipos e metadados de cada tabela",
+        "column_headers": ["Tabela", "Coluna", "Tipo", "Formato", "Oculta", "Expressão"],
+        "no_columns": "Nenhuma coluna encontrada nos metadados.",
+        "measures_banner": "Medidas calculadas com expressões DAX",
+        "measure_headers": ["Tabela", "Medida"],
+        "no_measures": "Nenhuma medida encontrada.",
+        "calc_columns_banner": "Colunas derivadas por expressões DAX",
+        "calc_headers": ["Tabela", "Coluna"],
+        "no_calc_columns": "Nenhuma coluna calculada encontrada.",
+        "relationships_banner": "Vínculos entre tabelas do modelo semântico",
+        "relationship_headers": ["Tabela origem", "Coluna origem", "Tabela destino", "Coluna destino", "Card.", "Filtro cruzado", "Ativo"],
+        "no_relationships": "Nenhum relacionamento encontrado.",
+        "erd_caption": "Diagrama entidade-relacionamento — modelo semântico Power BI",
+        "pages_banner": "Páginas do relatório e seus elementos visuais",
+        "page_headers": ["#", "Página", "Visuais", "Canvas (px)"],
+        "no_pages": "Nenhuma página encontrada.",
+        "visual_headers": ["Visual", "Tipo", "Campos / referências"],
+        "no_visuals": "Nenhum visual encontrado.",
+        "lineage_banner": "Grafo completo de dependências do pipeline",
+        "lineage_headers": ["Origem", "Relacao", "Destino"],
+        "no_lineage": "Nenhuma aresta de linhagem encontrada.",
+        "diagnostics_banner": "Alertas e informações técnicas da análise",
+        "relationship_columns": "Colunas disponíveis na tabela de relacionamentos:",
+        "rel_from": "Origem",
+        "rel_to": "Destino",
+        "cardinality": "Cardinalidade",
+        "cross_filter": "Filtro cruzado",
+        "relationship_example": "Exemplo de relacionamento detectado — ",
+        "message": "Mensagem",
+        "no_diagnostics": "Nenhum diagnóstico registrado.",
+        "yes": "Sim",
+        "no": "Não",
+        "dash": "—",
+        "m_code_heading": "3.1 Código M por consulta",
+        "summary": "Resumo",
+        "technical_expressions": "Expressões técnicas",
+        "additional_records_omitted": "{count} registros adicionais foram omitidos nesta seção para manter o documento legível.",
+        "no_records": "Nenhum registro encontrado.",
+        "record": "Registro",
+        "truncated": "truncado",
+        "connector": "Conector",
+        "steps": "Etapas",
+        "functions": "Funções",
+        "datatype_map": {
+            "2": "texto", "3": "decimal", "4": "inteiro", "5": "decimal",
+            "6": "moeda", "7": "data", "8": "booleano", "9": "binário",
+            "10": "variant", "17": "inteiro",
+            "string": "texto", "int64": "inteiro", "double": "decimal",
+            "boolean": "booleano", "datetime": "data/hora", "binary": "binário",
+        },
+    },
+    "en-US": {
+        "metrics": {
+            "sources": "Sources",
+            "queries": "Queries",
+            "tables": "Tables",
+            "measures": "Measures",
+            "calc_columns": "Calculated columns",
+            "relationships": "Relationships",
+            "pages": "Pages",
+            "visuals": "Visuals",
+        },
+        "sections": [
+            "Overview",
+            "Data sources",
+            "Power Query",
+            "Semantic model",
+            "Data dictionary",
+            "DAX measures",
+            "Calculated columns",
+            "Relationships",
+            "Pages and visuals",
+            "Technical lineage",
+            "Diagnostics",
+        ],
+        "cover_subtitle": "Technical report documentation",
+        "generated_at": "Generated at",
+        "toc": "Table of contents",
+        "overview_banner": "Report overview",
+        "overview_text": "Documentation automatically generated by BI Flow Mapper from the local metadata in the PBIX file.",
+        "file": "File",
+        "analysis_source": "Analysis source",
+        "total_nodes": "Total nodes in the map",
+        "total_edges": "Total lineage edges",
+        "data_sources_banner": "Detected connectors and data sources",
+        "source_headers": ["Source", "Detected pattern", "Path / server"],
+        "no_sources": "No sources detected.",
+        "arch_caption": "Architecture diagram — sources connected to the Power BI dataset",
+        "sources_detected": "source(s) detected:",
+        "connection_details": "2.1 Connection details (TMSCHEMA_DATASOURCES)",
+        "connection_headers": ["Type", "Name", "Connection string"],
+        "power_query_banner": "M transformations and queries",
+        "query_headers": ["Query", "Connection / path", "Technical summary"],
+        "no_queries": "No queries found.",
+        "semantic_model_banner": "Tables loaded into the model",
+        "table_headers": ["Table", "Columns", "Hidden", "Description"],
+        "no_tables": "No tables found.",
+        "dictionary_banner": "Columns, types, and metadata for each table",
+        "column_headers": ["Table", "Column", "Type", "Format", "Hidden", "Expression"],
+        "no_columns": "No columns found in the metadata.",
+        "measures_banner": "Calculated measures with DAX expressions",
+        "measure_headers": ["Table", "Measure"],
+        "no_measures": "No measures found.",
+        "calc_columns_banner": "Columns derived from DAX expressions",
+        "calc_headers": ["Table", "Column"],
+        "no_calc_columns": "No calculated columns found.",
+        "relationships_banner": "Links between semantic model tables",
+        "relationship_headers": ["Source table", "Source column", "Target table", "Target column", "Card.", "Cross filter", "Active"],
+        "no_relationships": "No relationships found.",
+        "erd_caption": "Entity relationship diagram — Power BI semantic model",
+        "pages_banner": "Report pages and their visual elements",
+        "page_headers": ["#", "Page", "Visuals", "Canvas (px)"],
+        "no_pages": "No pages found.",
+        "visual_headers": ["Visual", "Type", "Fields / references"],
+        "no_visuals": "No visuals found.",
+        "lineage_banner": "Complete dependency graph for the pipeline",
+        "lineage_headers": ["Source", "Relationship", "Target"],
+        "no_lineage": "No lineage edges found.",
+        "diagnostics_banner": "Warnings and technical information from the analysis",
+        "relationship_columns": "Available columns in the relationships table:",
+        "rel_from": "From",
+        "rel_to": "To",
+        "cardinality": "Cardinality",
+        "cross_filter": "Cross filter",
+        "relationship_example": "Detected relationship example — ",
+        "message": "Message",
+        "no_diagnostics": "No diagnostics recorded.",
+        "yes": "Yes",
+        "no": "No",
+        "dash": "—",
+        "m_code_heading": "3.1 M code by query",
+        "summary": "Summary",
+        "technical_expressions": "Technical expressions",
+        "additional_records_omitted": "{count} additional records were omitted in this section to keep the document readable.",
+        "no_records": "No records found.",
+        "record": "Record",
+        "truncated": "truncated",
+        "connector": "Connector",
+        "steps": "Steps",
+        "functions": "Functions",
+        "datatype_map": {
+            "2": "text", "3": "decimal", "4": "integer", "5": "decimal",
+            "6": "currency", "7": "date", "8": "boolean", "9": "binary",
+            "10": "variant", "17": "integer",
+            "string": "text", "int64": "integer", "double": "decimal",
+            "boolean": "boolean", "datetime": "date/time", "binary": "binary",
+        },
+    },
+}
 
+
+def normalize_doc_locale(locale: str = "") -> str:
+    normalized = str(locale or "").strip().lower()
+    if normalized.startswith("en"):
+        return "en-US"
+    return "pt-BR"
+
+
+def doc_text(locale: str = ""):
+    return DOC_TEXT[normalize_doc_locale(locale)]
+
+
+def build_documentation_docx(path: Path, file_name: str = "", locale: str = "pt-BR") -> bytes:
+    if not load_pbixray():
+        raise RuntimeError(f"pbixray nao esta instalado ou nao carregou: {PBIXRAY_IMPORT_ERROR}")
+    if not load_docx():
+        raise RuntimeError(f"python-docx nao esta instalado ou nao carregou: {DOCX_IMPORT_ERROR}")
+    load_pillow()
+
+    doc_labels = doc_text(locale)
+    metric_labels = doc_labels["metrics"]
     diagnostics = []
     model = PBIXRay(str(path))
     graph = analyze_pbix(path)
@@ -998,45 +1264,33 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
     doc = Document()
     configure_document_styles(doc)
     add_cover(doc, file_name or path.name, {
-        "Fontes": len(sources),
-        "Queries": len(queries),
-        "Tabelas": len(tables),
-        "Medidas": len(measure_nodes),
-        "Colunas calculadas": len(calc_column_nodes),
-        "Relacionamentos": len(relationships),
-        "Páginas": len(pages),
-        "Visuais": len(visuals),
-    })
-    add_table_of_contents(doc, [
-        "Visão geral",
-        "Fontes de dados",
-        "Power Query",
-        "Modelo semântico",
-        "Dicionário de dados",
-        "Medidas DAX",
-        "Colunas calculadas",
-        "Relacionamentos",
-        "Páginas e visuais",
-        "Linhagem técnica",
-        "Diagnósticos",
-    ])
+        metric_labels["sources"]: len(sources),
+        metric_labels["queries"]: len(queries),
+        metric_labels["tables"]: len(tables),
+        metric_labels["measures"]: len(measure_nodes),
+        metric_labels["calc_columns"]: len(calc_column_nodes),
+        metric_labels["relationships"]: len(relationships),
+        metric_labels["pages"]: len(pages),
+        metric_labels["visuals"]: len(visuals),
+    }, doc_labels)
+    add_table_of_contents(doc, doc_labels["sections"], doc_labels)
 
-    add_doc_heading(doc, "1. Visão geral", level=1)
-    add_section_banner(doc, "Visão geral do relatório", color="#0078D4", icon="📋")
+    add_doc_heading(doc, f"1. {doc_labels['sections'][0]}", level=1)
+    add_section_banner(doc, doc_labels["overview_banner"], color="#0078D4", icon="📋")
     add_paragraph(
         doc,
-        "Documentação gerada automaticamente pelo BI Flow Mapper a partir dos metadados locais do arquivo PBIX.",
+        doc_labels["overview_text"],
     )
     add_key_value_table(doc, [
-        ("Arquivo", file_name or path.name),
-        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
-        ("Origem da análise", "PBIXRay"),
-        ("Total de nós no mapa", len(nodes)),
-        ("Total de arestas de linhagem", len(edges)),
+        (doc_labels["file"], file_name or path.name),
+        (doc_labels["generated_at"], datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
+        (doc_labels["analysis_source"], "PBIXRay"),
+        (doc_labels["total_nodes"], len(nodes)),
+        (doc_labels["total_edges"], len(edges)),
     ])
 
-    add_doc_heading(doc, "2. Fontes de dados", level=1)
-    add_section_banner(doc, "Conectores e origens de dados detectados", color="#0078D4", icon="🔌")
+    add_doc_heading(doc, f"2. {doc_labels['sections'][1]}", level=1)
+    add_section_banner(doc, doc_labels["data_sources_banner"], color="#0078D4", icon="🔌")
     source_rows = []
     for source in sources:
         meta = source.get("meta", {})
@@ -1056,9 +1310,9 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
         source_rows.append([
             source.get("label", ""),
             meta.get("pattern", ""),
-            str(connection_string) if connection_string else "—",
+            str(connection_string) if connection_string else doc_labels["dash"],
         ])
-    add_records_table(doc, ["Fonte", "Padrão detectado", "Caminho / servidor"], source_rows, empty="Nenhuma fonte detectada.")
+    add_records_table(doc, doc_labels["source_headers"], source_rows, empty=doc_labels["no_sources"], labels=doc_labels)
 
     # ── Diagrama de arquitetura ──────────────────────────────────────────────
     arch_png = make_arch_png(sources, queries, edges)
@@ -1070,13 +1324,13 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
         cap = doc.add_paragraph()
         cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
         cap.paragraph_format.space_after = Pt(10)
-        cr = cap.add_run("Diagrama de arquitetura — fontes conectadas ao dataset Power BI")
+        cr = cap.add_run(doc_labels["arch_caption"])
         cr.font.size = Pt(8.5); cr.font.italic = True; cr.font.color.rgb = RGBColor(96,94,92)
     elif sources:
-        add_paragraph(doc, f"{len(sources)} fonte(s) detectada(s): " + ", ".join(s.get('label','') for s in sources))
+        add_paragraph(doc, f"{len(sources)} {doc_labels['sources_detected']} " + ", ".join(s.get('label','') for s in sources))
 
     if datasource_records:
-        add_doc_heading(doc, "2.1 Detalhes de conexão (TMSCHEMA_DATASOURCES)", level=2)
+        add_doc_heading(doc, doc_labels["connection_details"], level=2)
         arch_rows = []
         for ds in datasource_records[:30]:
             conn_str = (
@@ -1089,57 +1343,58 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
             kind = ds.get("Kind", ds.get("Type", ds.get("SourceType", "")))
             name = ds.get("Name", ds.get("ContentPath", ""))
             arch_rows.append([
-                str(kind) if kind else "—",
-                str(name) if name else "—",
-                str(conn_str) if conn_str else "—",
+                str(kind) if kind else doc_labels["dash"],
+                str(name) if name else doc_labels["dash"],
+                str(conn_str) if conn_str else doc_labels["dash"],
             ])
         if arch_rows:
-            add_records_table(doc, ["Tipo", "Nome", "String de conexão"], arch_rows, empty="")
+            add_records_table(doc, doc_labels["connection_headers"], arch_rows, empty="", labels=doc_labels)
         else:
-            add_generic_records_table(doc, datasource_records, max_rows=30)
+            add_generic_records_table(doc, datasource_records, max_rows=30, labels=doc_labels)
 
-    add_doc_heading(doc, "3. Power Query", level=1)
-    add_section_banner(doc, "Transformações e consultas M", color="#F2C811", icon="⚙️")
+    add_doc_heading(doc, f"3. {doc_labels['sections'][2]}", level=1)
+    add_section_banner(doc, doc_labels["power_query_banner"], color="#F2C811", icon="⚙️")
     query_rows = []
     for query in queries:
         meta = query.get("meta", {})
         query_rows.append([
             query.get("label", ""),
             meta.get("connectionPath", ""),
-            summarize_m_expression(meta.get("expression", "")),
+            summarize_m_expression(meta.get("expression", ""), doc_labels),
         ])
-    add_records_table(doc, ["Query", "Conexão / caminho", "Resumo técnico"], query_rows, empty="Nenhuma query encontrada.")
+    add_records_table(doc, doc_labels["query_headers"], query_rows, empty=doc_labels["no_queries"], labels=doc_labels)
 
-    add_power_query_evidence(doc, power_query)
+    add_power_query_evidence(doc, power_query, doc_labels)
 
-    add_doc_heading(doc, "4. Modelo semântico", level=1)
-    add_section_banner(doc, "Tabelas carregadas no modelo", color="#107C10", icon="🗄️")
-    table_rows = build_table_documentation_rows(tables, semantic_tables, schema)
-    add_records_table(doc, ["Tabela", "Colunas", "Oculta", "Descrição"], table_rows, empty="Nenhuma tabela encontrada.")
+    add_doc_heading(doc, f"4. {doc_labels['sections'][3]}", level=1)
+    add_section_banner(doc, doc_labels["semantic_model_banner"], color="#107C10", icon="🗄️")
+    table_rows = build_table_documentation_rows(tables, semantic_tables, schema, doc_labels)
+    add_records_table(doc, doc_labels["table_headers"], table_rows, empty=doc_labels["no_tables"], labels=doc_labels)
 
-    add_doc_heading(doc, "5. Dicionário de dados", level=1)
-    add_section_banner(doc, "Colunas, tipos e metadados de cada tabela", color="#107C10", icon="📖")
-    column_rows = build_column_rows(schema, tmschema_columns, semantic_tables)
+    add_doc_heading(doc, f"5. {doc_labels['sections'][4]}", level=1)
+    add_section_banner(doc, doc_labels["dictionary_banner"], color="#107C10", icon="📖")
+    column_rows = build_column_rows(schema, tmschema_columns, semantic_tables, doc_labels)
     add_records_table(
         doc,
-        ["Tabela", "Coluna", "Tipo", "Formato", "Oculta", "Expressão"],
+        doc_labels["column_headers"],
         column_rows,
-        empty="Nenhuma coluna encontrada nos metadados.",
+        empty=doc_labels["no_columns"],
         max_rows=250,
+        labels=doc_labels,
     )
 
-    add_doc_heading(doc, "6. Medidas DAX", level=1)
-    add_section_banner(doc, "Medidas calculadas com expressões DAX", color="#D83B01", icon="📐")
+    add_doc_heading(doc, f"6. {doc_labels['sections'][5]}", level=1)
+    add_section_banner(doc, doc_labels["measures_banner"], color="#D83B01", icon="📐")
     measure_rows = build_expression_rows(measures, measure_nodes, kind="measure")
-    add_expression_inventory(doc, ["Tabela", "Medida"], measure_rows, empty="Nenhuma medida encontrada.")
+    add_expression_inventory(doc, doc_labels["measure_headers"], measure_rows, empty=doc_labels["no_measures"], labels=doc_labels)
 
-    add_doc_heading(doc, "7. Colunas calculadas", level=1)
-    add_section_banner(doc, "Colunas derivadas por expressões DAX", color="#9B5094", icon="🔢")
+    add_doc_heading(doc, f"7. {doc_labels['sections'][6]}", level=1)
+    add_section_banner(doc, doc_labels["calc_columns_banner"], color="#9B5094", icon="🔢")
     calc_rows = build_expression_rows(calc_columns, calc_column_nodes, kind="calc_column")
-    add_expression_inventory(doc, ["Tabela", "Coluna"], calc_rows, empty="Nenhuma coluna calculada encontrada.")
+    add_expression_inventory(doc, doc_labels["calc_headers"], calc_rows, empty=doc_labels["no_calc_columns"], labels=doc_labels)
 
-    add_doc_heading(doc, "8. Relacionamentos", level=1)
-    add_section_banner(doc, "Vínculos entre tabelas do modelo semântico", color="#0078D4", icon="🔗")
+    add_doc_heading(doc, f"8. {doc_labels['sections'][7]}", level=1)
+    add_section_banner(doc, doc_labels["relationships_banner"], color="#0078D4", icon="🔗")
     relationship_rows = [[
         rel.get("fromTable", ""),
         rel.get("fromColumn", ""),
@@ -1147,14 +1402,15 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
         rel.get("toColumn", ""),
         rel.get("cardinality", ""),
         rel.get("crossFilter", ""),
-        "Sim" if rel.get("active", True) else "Não",
+        doc_labels["yes"] if rel.get("active", True) else doc_labels["no"],
     ] for rel in relationships]
     add_records_table(
         doc,
-        ["Tabela origem", "Coluna origem", "Tabela destino", "Coluna destino", "Card.", "Filtro cruzado", "Ativo"],
+        doc_labels["relationship_headers"],
         relationship_rows,
-        empty="Nenhum relacionamento encontrado.",
+        empty=doc_labels["no_relationships"],
         max_rows=200,
+        labels=doc_labels,
     )
 
     # ── Diagrama ERD ─────────────────────────────────────────────────────────
@@ -1167,13 +1423,13 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
         cap = doc.add_paragraph()
         cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
         cap.paragraph_format.space_after = Pt(10)
-        cr = cap.add_run("Diagrama entidade-relacionamento — modelo semântico Power BI")
+        cr = cap.add_run(doc_labels["erd_caption"])
         cr.font.size = Pt(8.5); cr.font.italic = True; cr.font.color.rgb = RGBColor(96,94,92)
 
-    add_doc_heading(doc, "9. Páginas e visuais", level=1)
-    add_section_banner(doc, "Páginas do relatório e seus elementos visuais", color="#8764B8", icon="📄")
+    add_doc_heading(doc, f"9. {doc_labels['sections'][8]}", level=1)
+    add_section_banner(doc, doc_labels["pages_banner"], color="#8764B8", icon="📄")
     page_rows = [[page.get("ordinal", 0) + 1, page.get("name", ""), page.get("visualCount", 0), f"{page.get('width', '')} x {page.get('height', '')}"] for page in pages]
-    add_records_table(doc, ["#", "Página", "Visuais", "Canvas (px)"], page_rows, empty="Nenhuma página encontrada.")
+    add_records_table(doc, doc_labels["page_headers"], page_rows, empty=doc_labels["no_pages"], labels=doc_labels)
 
     visual_rows = []
     for visual in visuals:
@@ -1192,38 +1448,37 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
                 continue
             seen_refs.add(ref_lower)
             clean_refs.append(ref_str)
-        refs_display = "\n".join(clean_refs) if clean_refs else "—"
+        refs_display = "\n".join(clean_refs) if clean_refs else doc_labels["dash"]
         visual_rows.append([
             visual.get("label", ""),
             meta.get("visualType", ""),
             refs_display,
         ])
-    add_records_table(doc, ["Visual", "Tipo", "Campos / referências"], visual_rows, empty="Nenhum visual encontrado.", max_rows=120)
+    add_records_table(doc, doc_labels["visual_headers"], visual_rows, empty=doc_labels["no_visuals"], max_rows=120, labels=doc_labels)
 
-    add_doc_heading(doc, "10. Linhagem técnica", level=1)
-    add_section_banner(doc, "Grafo completo de dependências do pipeline", color="#1B2A38", icon="🔀")
+    add_doc_heading(doc, f"10. {doc_labels['sections'][9]}", level=1)
+    add_section_banner(doc, doc_labels["lineage_banner"], color="#1B2A38", icon="🔀")
     edge_rows = []
-    labels = {node.get("id"): node.get("label", node.get("id", "")) for node in nodes}
+    node_labels = {node.get("id"): node.get("label", node.get("id", "")) for node in nodes}
     for item in edges:
         edge_rows.append([
-            labels.get(item.get("from"), item.get("from", "")),
+            node_labels.get(item.get("from"), item.get("from", "")),
             item.get("label", ""),
-            labels.get(item.get("to"), item.get("to", "")),
+            node_labels.get(item.get("to"), item.get("to", "")),
         ])
-    add_records_table(doc, ["Origem", "Relacao", "Destino"], edge_rows, empty="Nenhuma aresta de linhagem encontrada.", max_rows=300)
+    add_records_table(doc, doc_labels["lineage_headers"], edge_rows, empty=doc_labels["no_lineage"], max_rows=300, labels=doc_labels)
 
-    add_doc_heading(doc, "11. Diagnósticos", level=1)
-    add_section_banner(doc, "Alertas e informações técnicas da análise", color="#605E5C", icon="🔍")
+    add_doc_heading(doc, f"11. {doc_labels['sections'][10]}", level=1)
+    add_section_banner(doc, doc_labels["diagnostics_banner"], color="#605E5C", icon="🔍")
     readable_warnings = []
     for w in unique_texts(warnings):
         if not w:
             continue
-        # Translate relationship debug lines to readable Portuguese
         if w.startswith("relationships columns:"):
             cols_match = re.search(r"\[(.+)\]", w)
             if cols_match:
                 cols = [c.strip().strip("'") for c in cols_match.group(1).split(",")]
-                readable_warnings.append(f"Colunas disponíveis na tabela de relacionamentos: {', '.join(cols)}")
+                readable_warnings.append(f"{doc_labels['relationship_columns']} {', '.join(cols)}")
             else:
                 readable_warnings.append(w)
         elif w.startswith("relationships first row:"):
@@ -1235,15 +1490,15 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
                     row_dict[key] = sv if sv is not None else (nv if nv is not None else "")
                 parts = []
                 if row_dict.get("FromTableName"):
-                    parts.append(f"Origem: {row_dict['FromTableName']}[{row_dict.get('FromColumnName', '')}]")
+                    parts.append(f"{doc_labels['rel_from']}: {row_dict['FromTableName']}[{row_dict.get('FromColumnName', '')}]")
                 if row_dict.get("ToTableName"):
-                    parts.append(f"Destino: {row_dict['ToTableName']}[{row_dict.get('ToColumnName', '')}]")
+                    parts.append(f"{doc_labels['rel_to']}: {row_dict['ToTableName']}[{row_dict.get('ToColumnName', '')}]")
                 if row_dict.get("Cardinality"):
-                    parts.append(f"Cardinalidade: {row_dict['Cardinality']}")
+                    parts.append(f"{doc_labels['cardinality']}: {row_dict['Cardinality']}")
                 if row_dict.get("CrossFilteringBehavior"):
-                    parts.append(f"Filtro cruzado: {row_dict['CrossFilteringBehavior']}")
+                    parts.append(f"{doc_labels['cross_filter']}: {row_dict['CrossFilteringBehavior']}")
                 if parts:
-                    readable_warnings.append("Exemplo de relacionamento detectado — " + " | ".join(parts))
+                    readable_warnings.append(doc_labels["relationship_example"] + " | ".join(parts))
                 else:
                     readable_warnings.append(w)
             except Exception:
@@ -1251,7 +1506,7 @@ def build_documentation_docx(path: Path, file_name: str = "") -> bytes:
         else:
             readable_warnings.append(w)
     warning_rows = [[w] for w in readable_warnings if w]
-    add_records_table(doc, ["Mensagem"], warning_rows, empty="Nenhum diagnóstico registrado.", max_rows=120)
+    add_records_table(doc, [doc_labels["message"]], warning_rows, empty=doc_labels["no_diagnostics"], max_rows=120, labels=doc_labels)
 
     output = BytesIO()
     doc.save(output)
@@ -1289,7 +1544,8 @@ def configure_document_styles(doc):
         style.font.color.rgb = RGBColor.from_string(color)
 
 
-def add_cover(doc, file_name, metrics):
+def add_cover(doc, file_name, metrics, labels=None):
+    labels = labels or doc_text("pt-BR")
     # ── Gold top stripe (Power BI identity) ─────────────────────────────────
     def _make_stripe() -> bytes | None:
         if not PIL_AVAILABLE:
@@ -1329,7 +1585,7 @@ def add_cover(doc, file_name, metrics):
     subtitle = doc.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle.paragraph_format.space_after = Pt(20)
-    subtitle_run = subtitle.add_run("Documentação técnica do painel")
+    subtitle_run = subtitle.add_run(labels["cover_subtitle"])
     subtitle_run.font.size = Pt(13)
     subtitle_run.font.color.rgb = RGBColor(30, 109, 133)
 
@@ -1342,7 +1598,7 @@ def add_cover(doc, file_name, metrics):
     file_run.font.color.rgb = RGBColor(35, 48, 64)
 
     add_metric_grid(doc, metrics)
-    add_paragraph(doc, f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    add_paragraph(doc, f"{labels['generated_at']} {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
     # ── Gold bottom stripe ───────────────────────────────────────────────────
     if stripe_png:
@@ -1355,8 +1611,9 @@ def add_cover(doc, file_name, metrics):
     doc.add_page_break()
 
 
-def add_table_of_contents(doc, sections):
-    add_doc_heading(doc, "Sumário", level=1)
+def add_table_of_contents(doc, sections, labels=None):
+    labels = labels or doc_text("pt-BR")
+    add_doc_heading(doc, labels["toc"], level=1)
     table = doc.add_table(rows=0, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
@@ -1458,7 +1715,8 @@ def add_key_value_table(doc, rows):
     doc.add_paragraph("")
 
 
-def add_records_table(doc, headers, rows, empty="", max_rows=120):
+def add_records_table(doc, headers, rows, empty="", max_rows=120, labels=None):
+    labels = labels or doc_text("pt-BR")
     if not rows:
         add_paragraph(doc, empty)
         return
@@ -1479,7 +1737,7 @@ def add_records_table(doc, headers, rows, empty="", max_rows=120):
     for row_index, row in enumerate(limited_rows):
         cells = table.add_row().cells
         for index, value in enumerate(row[:len(headers)]):
-            cells[index].text = clip(value, 700)
+            cells[index].text = clip(value, 700, labels)
             cells[index].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
             set_cell_margins(cells[index], top=70, start=90, bottom=70, end=90)
             if row_index % 2:
@@ -1487,11 +1745,12 @@ def add_records_table(doc, headers, rows, empty="", max_rows=120):
             set_cell_font(cells[index], color="1F2937")
 
     if len(rows) > max_rows:
-        add_paragraph(doc, f"{len(rows) - max_rows} registros adicionais foram omitidos nesta seção para manter o documento legível.")
+        add_paragraph(doc, labels["additional_records_omitted"].format(count=len(rows) - max_rows))
     doc.add_paragraph("")
 
 
-def add_generic_records_table(doc, records, max_rows=60):
+def add_generic_records_table(doc, records, max_rows=60, labels=None):
+    labels = labels or doc_text("pt-BR")
     keys = []
     for record in records:
         for key in record.keys():
@@ -1500,40 +1759,43 @@ def add_generic_records_table(doc, records, max_rows=60):
         if len(keys) >= 6:
             break
     rows = [[doc_value(record.get(key, "")) for key in keys] for record in records]
-    add_records_table(doc, keys or ["Registro"], rows, empty="Nenhum registro encontrado.", max_rows=max_rows)
+    add_records_table(doc, keys or [labels["record"]], rows, empty=labels["no_records"], max_rows=max_rows, labels=labels)
 
 
-def add_power_query_evidence(doc, power_query):
+def add_power_query_evidence(doc, power_query, labels=None):
+    labels = labels or doc_text("pt-BR")
     if not power_query:
         return
-    add_doc_heading(doc, "3.1 Código M por consulta", level=2)
+    add_doc_heading(doc, labels["m_code_heading"], level=2)
     for index, row in enumerate(power_query[:30], 1):
         name = first_value(row, ["TableName", "Name", "QueryName", "table", "name"]) or f"Query {index}"
         expression = first_value(row, ["Expression", "expression", "MExpression"]) or record_text(row)
-        add_code_block(doc, str(name), expression, max_chars=2800)
+        add_code_block(doc, str(name), expression, max_chars=2800, labels=labels)
 
 
-def add_expression_inventory(doc, headers, rows, empty=""):
+def add_expression_inventory(doc, headers, rows, empty="", labels=None):
+    labels = labels or doc_text("pt-BR")
     if not rows:
         add_paragraph(doc, empty)
         return
 
-    inventory_rows = [[row[0], row[1], summarize_expression(row[2])] for row in rows]
-    add_records_table(doc, headers + ["Resumo"], inventory_rows, empty=empty, max_rows=200)
+    inventory_rows = [[row[0], row[1], summarize_expression(row[2], labels)] for row in rows]
+    add_records_table(doc, headers + [labels["summary"]], inventory_rows, empty=empty, max_rows=200, labels=labels)
 
     expressive_rows = [row for row in rows if str(row[2] or "").strip()]
     if not expressive_rows:
         return
 
-    add_doc_heading(doc, "Expressões técnicas", level=2)
+    add_doc_heading(doc, labels["technical_expressions"], level=2)
     for table, name, expression in expressive_rows[:80]:
         title = f"{name}"
         if table:
             title = f"{table} - {name}"
-        add_code_block(doc, title, expression, max_chars=2200)
+        add_code_block(doc, title, expression, max_chars=2200, labels=labels)
 
 
-def add_code_block(doc, title, code, max_chars=2600):
+def add_code_block(doc, title, code, max_chars=2600, labels=None):
+    labels = labels or doc_text("pt-BR")
     title_paragraph = doc.add_paragraph()
     title_paragraph.paragraph_format.keep_with_next = True
     title_paragraph.paragraph_format.space_before = Pt(8)
@@ -1552,14 +1814,15 @@ def add_code_block(doc, title, code, max_chars=2600):
     set_cell_margins(cell, top=120, start=140, bottom=120, end=140)
     paragraph = cell.paragraphs[0]
     paragraph.paragraph_format.space_after = Pt(0)
-    code_run = paragraph.add_run(normalize_code_text(clip(code, max_chars)))
+    code_run = paragraph.add_run(normalize_code_text(clip(code, max_chars, labels)))
     code_run.font.name = "Consolas"
     code_run.font.size = Pt(7.5)
     code_run.font.color.rgb = RGBColor(31, 41, 55)
     doc.add_paragraph("")
 
 
-def build_table_documentation_rows(table_nodes, semantic_tables, schema):
+def build_table_documentation_rows(table_nodes, semantic_tables, schema, labels=None):
+    labels = labels or doc_text("pt-BR")
     table_meta = {}
     for row in semantic_tables:
         name = first_value(row, ["Name", "TableName", "Table", "name"])
@@ -1580,13 +1843,14 @@ def build_table_documentation_rows(table_nodes, semantic_tables, schema):
         rows.append([
             name,
             column_counts.get(name, ""),
-            bool_label(first_value(meta, ["IsHidden", "Hidden", "isHidden"])),
+            bool_label(first_value(meta, ["IsHidden", "Hidden", "isHidden"]), labels),
             first_value(meta, ["Description", "description"]) or "",
         ])
     return rows
 
 
-def build_column_rows(schema, tmschema_columns=None, tmschema_tables=None):
+def build_column_rows(schema, tmschema_columns=None, tmschema_tables=None, labels=None):
+    labels = labels or doc_text("pt-BR")
     """Build data dictionary rows merging schema + TMSCHEMA_COLUMNS metadata.
 
     tmschema_columns uses a numeric TableID foreign key, so we first build a
@@ -1613,13 +1877,7 @@ def build_column_rows(schema, tmschema_columns=None, tmschema_tables=None):
             tmschema_lookup[(table_name.lower(), str(col).lower())] = row
 
     # Normalize DataType codes from TMSCHEMA to readable names
-    DATATYPE_MAP = {
-        "2": "texto", "3": "decimal", "4": "inteiro", "5": "decimal",
-        "6": "moeda", "7": "data", "8": "booleano", "9": "binário",
-        "10": "variant", "17": "inteiro",
-        "string": "texto", "int64": "inteiro", "double": "decimal",
-        "boolean": "booleano", "datetime": "data/hora", "binary": "binário",
-    }
+    DATATYPE_MAP = labels["datatype_map"]
 
     rows = []
     seen = set()
@@ -1653,7 +1911,7 @@ def build_column_rows(schema, tmschema_columns=None, tmschema_tables=None):
             first_value(tm, ["IsHidden", "Hidden", "isHidden"])
             or first_value(row, ["IsHidden", "Hidden", "isHidden"])
         )
-        hidden = bool_label(is_hidden_val)
+        hidden = bool_label(is_hidden_val, labels)
 
         expression = (
             first_value(tm, ["Expression", "expression"])
@@ -1779,11 +2037,12 @@ def bold_cell(cell):
     set_cell_font(cell, bold=True)
 
 
-def clip(value, limit=900):
+def clip(value, limit=900, labels=None):
+    labels = labels or doc_text("pt-BR")
     text = doc_value(value)
     if len(text) <= limit:
         return text
-    return text[: max(0, limit - 18)].rstrip() + "\n...[truncado]"
+    return text[: max(0, limit - 18)].rstrip() + f"\n...[{labels['truncated']}]"
 
 
 def normalize_code_text(value):
@@ -1793,7 +2052,8 @@ def normalize_code_text(value):
     return text
 
 
-def summarize_m_expression(expression):
+def summarize_m_expression(expression, labels=None):
+    labels = labels or doc_text("pt-BR")
     text = doc_value(expression)
     if not text.strip():
         return ""
@@ -1802,22 +2062,23 @@ def summarize_m_expression(expression):
     connector_match = re.search(r"([A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*)\s*\(", text)
     parts = []
     if connector_match:
-        parts.append(f"Conector: {connector_match.group(1)}")
+        parts.append(f"{labels['connector']}: {connector_match.group(1)}")
     if steps:
-        parts.append("Etapas: " + ", ".join(steps[:6]))
+        parts.append(f"{labels['steps']}: " + ", ".join(steps[:6]))
     if not parts:
-        parts.append(clip(text, 180))
+        parts.append(clip(text, 180, labels))
     return " | ".join(parts)
 
 
-def summarize_expression(expression):
+def summarize_expression(expression, labels=None):
+    labels = labels or doc_text("pt-BR")
     text = re.sub(r"\s+", " ", doc_value(expression)).strip()
     if not text:
         return ""
     functions = sorted(set(re.findall(r"\b([A-Z][A-Z0-9_]+)\s*\(", text)))
     if functions:
-        return "Funções: " + ", ".join(functions[:8])
-    return clip(text, 180)
+        return f"{labels['functions']}: " + ", ".join(functions[:8])
+    return clip(text, 180, labels)
 
 
 def doc_value(value):
@@ -1828,10 +2089,11 @@ def doc_value(value):
     return str(value)
 
 
-def bool_label(value):
+def bool_label(value, labels=None):
+    labels = labels or doc_text("pt-BR")
     if value in ("", None):
         return ""
-    return "Sim" if str(value).strip().lower() in {"true", "1", "yes", "sim"} else "Não"
+    return labels["yes"] if str(value).strip().lower() in {"true", "1", "yes", "sim"} else labels["no"]
 
 
 def unique_texts(values):

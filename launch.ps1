@@ -4,10 +4,29 @@ Add-Type -AssemblyName System.Windows.Forms
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backend = Join-Path $root "backend.py"
 $portFile = Join-Path $root "bi-flow-mapper.port"
-$python = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+$venvPython = Join-Path $root ".venv\Scripts\python.exe"
+$codexPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 
-if (-not (Test-Path $python)) {
-  $python = "python.exe"
+function Test-PythonDependency {
+  param([string]$PythonPath)
+  if (-not (Get-Command $PythonPath -ErrorAction SilentlyContinue)) {
+    return $false
+  }
+  & $PythonPath -c "import pbixray, docx, PIL" *> $null
+  return $LASTEXITCODE -eq 0
+}
+
+$python = $null
+foreach ($candidate in @($venvPython, "python.exe", $codexPython)) {
+  if (Test-PythonDependency $candidate) {
+    $python = $candidate
+    break
+  }
+}
+
+if (-not $python) {
+  [System.Windows.Forms.MessageBox]::Show("O BI Flow Mapper nao encontrou um Python com pbixray instalado. Execute: .venv\Scripts\python.exe -m pip install -r requirements.txt", "BI Flow Mapper") | Out-Null
+  exit 1
 }
 
 Remove-Item -LiteralPath $portFile -ErrorAction SilentlyContinue
