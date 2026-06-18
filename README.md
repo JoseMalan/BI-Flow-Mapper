@@ -177,6 +177,31 @@ All other dependencies (`numpy`, `pandas`, `apsw`, etc.) are pulled in transitiv
 
 ---
 
+## Open-source acknowledgements
+
+> **BI Flow Mapper exists because it stands on a strong foundation of open-source projects.**
+
+What looks like a single executable is, underneath, a collaboration between communities: people decoding complex file formats, building reliable data tools, rendering native interfaces, generating documents, and making Python applications distributable.
+
+| Project | What it makes possible |
+|---------|------------------------|
+| [**PBIXRay**](https://github.com/Hugoberry/pbixray) | The technical heart of the project — opens PBIX models and exposes Power Query, DAX, schema, relationships, and report metadata. |
+| [**pandas**](https://pandas.pydata.org/) | Gives structure to the tabular metadata extracted from Power BI models. |
+| [**NumPy**](https://numpy.org/) | Provides the numerical foundation used throughout the data-processing stack. |
+| [**APSW**](https://github.com/rogerbinns/apsw) | Enables low-level, dependable access to SQLite metadata embedded in Power BI artifacts. |
+| [**Kaitai Struct**](https://kaitai.io/) | Helps describe and parse binary structures in a clear, reproducible way. |
+| [**xpress8**, **xpress9**](https://pypi.org/project/xpress8/) and [**xmhuffman**](https://pypi.org/project/xmhuffman/) | Decode Microsoft compression formats found inside Power BI data models. |
+| [**python-docx**](https://python-docx.readthedocs.io/) | Turns an analyzed model into editable Word documentation. |
+| [**Pillow**](https://python-pillow.org/) | Draws diagrams, banners, and visual assets used in documentation exports. |
+| [**pywebview**](https://pywebview.flowrl.com/) | Wraps the web interface in a lightweight native Windows desktop window. |
+| [**PyInstaller**](https://pyinstaller.org/) | Packages the complete application as a standalone executable for users without Python. |
+
+To every maintainer, contributor, bug reporter, documentation writer, and community member behind these projects: **thank you**. BI Flow Mapper is one more branch growing from the ecosystem you built.
+
+If this project is useful to you, please consider visiting these projects, starring their repositories, supporting their maintainers, or contributing back. Open source stays strong when appreciation becomes participation.
+
+---
+
 ## Known limitations
 
 - Visual ↔ field bindings are inferred from the report layout JSON, not from a live Analysis Services connection, so some edges may be missing or approximate.
