@@ -6,6 +6,14 @@
 
 BI Flow Mapper reads a `.pbix` file and draws the full pipeline from data sources through Power Query, model tables, DAX measures, calculated columns and report visuals — with impact analysis, relationship diagrams, architecture overview, pages inventory, and Word documentation export.
 
+## 🎥 Video Demo
+
+Watch BI Flow Mapper in action:
+
+[![Watch on YouTube](https://img.shields.io/badge/YouTube-Video%20Demo-red?logo=youtube)](https://youtu.be/C-eEdELC02E)
+
+https://youtu.be/C-eEdELC02E
+
 ---
 
 ## Two ways to run
